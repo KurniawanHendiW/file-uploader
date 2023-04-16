@@ -24,8 +24,9 @@ import (
 
 type S3Service interface {
 	CreateBucket(bucketName string) error
-	UploadFile(data UploadFileData) (string, error)
-	DeleteFile(data DeleteFileData) error
+	UploadFile(data UploadFileRequest) (string, error)
+	DeleteFile(data DeleteFileRequest) error
+	DownloadFile(data DownloadFileRequest) ([]byte, error)
 }
 
 type s3Service struct {
@@ -95,7 +96,7 @@ func (s *s3Service) isExistBucket(bucketName string) (bool, error) {
 	return true, nil
 }
 
-func (s *s3Service) UploadFile(data UploadFileData) (string, error) {
+func (s *s3Service) UploadFile(data UploadFileRequest) (string, error) {
 	if err := s.validateUploadFile(data); err != nil {
 		return "", err
 	}
@@ -196,7 +197,7 @@ func removeFile(pathFile string) error {
 	return nil
 }
 
-func (s *s3Service) DeleteFile(data DeleteFileData) error {
+func (s *s3Service) DeleteFile(data DeleteFileRequest) error {
 	if err := s.validateDeleteFile(data); err != nil {
 		return err
 	}
@@ -224,8 +225,31 @@ func (s *s3Service) DeleteFile(data DeleteFileData) error {
 	})
 	if err != nil {
 		log.Printf("failed to delete files %v: %v", fileExist, err)
-		return err
+		return fmt.Errorf("failed to delete files")
 	}
 
 	return nil
+}
+
+func (s *s3Service) DownloadFile(data DownloadFileRequest) ([]byte, error) {
+	if err := s.validateDownloadFile(data); err != nil {
+		return nil, err
+	}
+
+	var partMiBs int64 = 10
+	downloader := manager.NewDownloader(s.s3Cli, func(d *manager.Downloader) {
+		d.PartSize = partMiBs * 1024 * 1024
+	})
+
+	buffer := manager.NewWriteAtBuffer([]byte{})
+	_, err := downloader.Download(context.TODO(), buffer, &s3.GetObjectInput{
+		Bucket: aws.String(data.BucketName),
+		Key:    aws.String(data.Filename),
+	})
+	if err != nil {
+		log.Printf("failed to download file %s - %s: %v", data.BucketName, data.Filename, err)
+		return nil, fmt.Errorf("failed to download file")
+	}
+
+	return buffer.Bytes(), nil
 }
