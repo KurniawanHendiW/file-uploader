@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -26,6 +25,7 @@ import (
 type S3Service interface {
 	CreateBucket(bucketName string) error
 	UploadFile(data UploadFileData) (string, error)
+	DeleteFile(data DeleteFileData) error
 }
 
 type s3Service struct {
@@ -84,7 +84,6 @@ func (s *s3Service) isExistBucket(bucketName string) (bool, error) {
 		if errors.As(err, &apiError) {
 			switch apiError.(type) {
 			case *types.NotFound:
-				log.Printf("bucket %s does not exist.", bucketName)
 				return false, nil
 			default:
 				log.Printf("don't have access to bucket %v or another error occurred: %v", bucketName, err)
@@ -92,8 +91,6 @@ func (s *s3Service) isExistBucket(bucketName string) (bool, error) {
 			}
 		}
 	}
-
-	log.Printf("bucket %v exists and you already own it ", bucketName)
 
 	return true, nil
 }
@@ -159,7 +156,6 @@ func (s *s3Service) isFileExist(bucketName, filename string) (bool, error) {
 		var respErr *awsHttp.ResponseError
 		if errors.As(err, &respErr) {
 			if respErr.ResponseError.HTTPStatusCode() == http.StatusNotFound {
-				log.Printf("file %s does not exist", filename)
 				return false, nil
 			} else {
 				log.Printf("get head object %s got error: %v", filename, respErr.Err.Error())
@@ -170,8 +166,6 @@ func (s *s3Service) isFileExist(bucketName, filename string) (bool, error) {
 			return false, err
 		}
 	}
-
-	log.Printf("file %v exists and you already own it ", filename)
 
 	return true, nil
 }
@@ -202,31 +196,35 @@ func removeFile(pathFile string) error {
 	return nil
 }
 
-func (s *s3Service) validateUploadFile(data UploadFileData) error {
-	if data.Filename == "" {
-		return errors.New("filename is required")
-	}
-
-	if data.Base64Encoding == "" {
-		return errors.New("base64Encoding is required")
-	}
-
-	if data.BucketName == "" {
-		return errors.New("bucket name is required")
-	}
-
-	_, err := mime.ExtensionsByType(data.ContentType)
-	if err != nil {
+func (s *s3Service) DeleteFile(data DeleteFileData) error {
+	if err := s.validateDeleteFile(data); err != nil {
 		return err
 	}
 
-	fileExist, err := s.isFileExist(data.BucketName, data.Filename)
-	if err != nil {
-		return err
+	fileExist := []string{}
+	for _, filename := range data.Filename {
+		isExist, err := s.isFileExist(data.BucketName, filename)
+		if err != nil {
+			return err
+		}
+
+		if isExist {
+			fileExist = append(fileExist, filename)
+		}
 	}
 
-	if fileExist {
-		return fmt.Errorf("file %s already exist on bucket %s", data.Filename, data.BucketName)
+	var objectIds []types.ObjectIdentifier
+	for _, key := range fileExist {
+		objectIds = append(objectIds, types.ObjectIdentifier{Key: aws.String(key)})
+	}
+
+	_, err := s.s3Cli.DeleteObjects(context.TODO(), &s3.DeleteObjectsInput{
+		Bucket: aws.String(data.BucketName),
+		Delete: &types.Delete{Objects: objectIds},
+	})
+	if err != nil {
+		log.Printf("failed to delete files %v: %v", fileExist, err)
+		return err
 	}
 
 	return nil
